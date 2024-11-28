@@ -7,11 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: "选择要编译的LUCI版本"
+        description: "选择编译源码仓库"
         required: true
-        default: "18.06"
+        default: "lede"
         type: choice
-        options: [18.06, 23.05]
+        options: [lede, immortalwrt]
+
+#      branch:
+#        description: "选择源码仓库分支"
+#        required: true
+#        default: "master"
+#        type: choice
+#        options: [master, openwrt-23.05, openwrt-21.02, openwrt-18.06]
 
       target:
         description: "选择要编译的机型"
@@ -28,16 +35,10 @@ on:
       openclash:
         description: "下载openclash内核"
         required: false
-        default: "amd64"
+        default: ""
 
       zsh_tool:
         description: "下载zsh终端工具"
-        required: false
-        default: true
-        type: boolean
-
-      toolchain:
-        description: "保存Toolchain缓存"
         required: false
         default: true
         type: boolean
@@ -70,7 +71,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id || ! github.event.sender.id
-    name: build ${{ github.event.inputs.target }} ${{ github.event.inputs.source }}
+    name: build ${{ github.event.inputs.target }} ${{ github.event.inputs.source }} ${{ github.event.inputs.branch }}
 #    strategy:
 #      fail-fast: false
 #      matrix:
@@ -78,33 +79,22 @@ jobs:
 #        branch: [18.06, 23.05]
 
     env:
-#      TARGET_DEVICE: ${{ github.event.inputs.target }}
+      SOURCE_REPO: ${{ github.event.inputs.source }}
+#      REPO_BRANCH: ${{ github.event.inputs.branch }}
+      TARGET_DEVICE: ${{ github.event.inputs.target }}
       DEFAULT_IP: ${{ github.event.inputs.ip }}
       CLASH_KERNEL: ${{ github.event.inputs.openclash }}
       ZSH_TOOL: ${{ github.event.inputs.zsh_tool }}
-      CACHE_TOOLCHAIN: ${{ github.event.inputs.toolchain }}
       UPLOAD_BIN_DIR: ${{ github.event.inputs.bin_dir }}
       UPLOAD_ARTIFACT: ${{ github.event.inputs.artifact }}
       UPLOAD_RELEASE: ${{ github.event.inputs.release }}
-      CONFIG_FILE: configs/${{ github.event.inputs.target }}-${{ github.event.inputs.source }}.config
-      DIY_SCRIPT: diy-${{ github.event.inputs.source }}.sh
-      RELEASE_TAG: ${{ github.event.inputs.target }}-${{ github.event.inputs.source }}
+      CONFIG_FILE: configs/${{ github.event.inputs.source }}-${{ github.event.inputs.target }}.config
+      DIY_SCRIPT: ${{ github.event.inputs.source }}.sh
+      RELEASE_TAG: ${{ github.event.inputs.source }}-${{ github.event.inputs.target }}
+      TOOLCHAIN_TAG: toolchain
       TZ: Asia/Shanghai
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Set Compile Source Code
-      run: |
-        if [ github.event.inputs.source == '18.06' ]; then
-          echo "REPO_URL=https://github.com/coolsnowwolf/lede" >>$GITHUB_ENV
-          echo "REPO_BRANCH=master" >>$GITHUB_ENV
-        elif [ github.event.inputs.source == '23.05' ]; then
-          echo "REPO_URL=https://github.com/immortalwrt/immortalwrt" >>$GITHUB_ENV
-          echo "REPO_BRANCH=openwrt-23.05" >>$GITHUB_ENV
-        fi
-
     - name: Check Server Performance
       run: |
         echo "警告⚠"
@@ -120,22 +110,30 @@ jobs:
         echo "==========================硬盘信息=========================="
         echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
+    - name: Free Disk Space
+      if: github.event.inputs.free_disk == 'true'
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
     - name: Initialization Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        docker rmi $(docker images -q)
-        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
-        sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
-        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
         (sudo -E apt-get -y update
-        sudo -E apt-get -y install clang rename $(curl -fsSL is.gd/depends_ubuntu_2204)
+        sudo -E apt-get -y install clang $(curl -fsSL is.gd/depends_ubuntu_2204)
         sudo -E systemctl daemon-reload
         sudo -E apt-get -y autoremove --purge
         sudo -E apt-get -y clean) &
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Combine Disks
+    - name: Maximize Build Space
       run: |
         MNT_SIZE=$((($(df --block-size=1024 --output=avail /mnt | tail -1) - 1024*1024*1) * 1024))
         sudo fallocate -l $MNT_SIZE /mnt/mnt.img
@@ -153,85 +151,58 @@ jobs:
         sudo mount -o compress=zstd $LV_NAME /workdir
         sudo chown -R runner:runner /workdir && df -hT
 
-    - name: Clone Source Code
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-        cd openwrt
-        echo "OPENWRT_PATH=$PWD" >>$GITHUB_ENV
-        COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
-        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >>$GITHUB_ENV
-        COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")
-        echo "COMMIT_DATE=$COMMIT_DATE" >>$GITHUB_ENV
-        COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
-        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >>$GITHUB_ENV
-        COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
-        echo "COMMIT_HASH=$COMMIT_HASH" >>$GITHUB_ENV
+    - name: Checkout
+      uses: actions/checkout@main
 
-    - name: Generate Variables
+    - name: Load Custom Script
+      run: chmod +x $DIY_SCRIPT && ./$DIY_SCRIPT
+
+    - name: Compile Toolchain
+      if: env.REBUILD_TOOLCHAIN == 'true' && !cancelled()
+      id: toolchain
       run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
-        make defconfig >/dev/null 2>&1
-        SOURCE_REPO=$(echo $REPO_URL | awk -F '/' '{print $(NF)}')
-        echo "SOURCE_REPO=$SOURCE_REPO" >>$GITHUB_ENV
-        echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
-        TARGET_NAME=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
-        SUBTARGET_NAME=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
-        DEVICE_TARGET=$TARGET_NAME-$SUBTARGET_NAME
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >>$GITHUB_ENV
-        KERNEL=$(grep -oP 'KERNEL_PATCHVER:=\K[^ ]+' target/linux/$TARGET_NAME/Makefile)
-        KERNEL_VERSION=$(sed -n 2p include/kernel-$KERNEL | awk '{print $1}' | awk -F '-' '{print $2}')
-        echo "KERNEL_VERSION=$KERNEL_VERSION" >>$GITHUB_ENV
+        make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+        $GITHUB_WORKSPACE/$DIY_SCRIPT.sh
 
-    - name: Cache Toolchain
-      if: env.CACHE_TOOLCHAIN == 'true'
-      uses: HiGarfield/cachewrtbuild@main
+    - name: Delete Old Toolchain
+      if: steps.toolchain.conclusion == 'success' && !cancelled()
+      uses: mknejp/delete-release-assets@v1
       with:
-        ccache: false
-        mixkey: ${{ env.SOURCE_REPO }}-${{ env.LITE_BRANCH }}-${{ env.DEVICE_TARGET }}
-        prefix: ${{ env.OPENWRT_PATH }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ env.TOOLCHAIN_TAG }}
+        assets: '${{ env.SOURCE_REPO }}-${{ env.LITE_BRANCH }}-${{ env.DEVICE_TARGET }}.*'
+        fail-if-no-assets: false
+        fail-if-no-release: false
 
-    - name: Install Feeds
-      run: |
-        cd $OPENWRT_PATH
-        if [ $SOURCE_REPO == 'lede' ]; then
-          sed -i '/luci/s/^#//; /openwrt-23.05/s/^/#/' feeds.conf.default
-        fi
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: Load Custom Configuration
-      run: |
-        [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $DIY_SCRIPT
-        cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
+    - name: Upload Toolchain To Release
+      if: steps.toolchain.conclusion == 'success' && !cancelled()
+      uses: softprops/action-gh-release@master
+      with:
+        name: toolchain-cache
+        tag_name: ${{ env.TOOLCHAIN_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        files: output/*
+        body: OpenWrt 工具链缓存
 
     - name: Download DL Package
       run: |
         cd $OPENWRT_PATH
-        make download -j$(nproc)
+        make package/download -j$(nproc)
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
     - name: Compile Firmware
       id: compile
       run: |
+        [ -e files ] && mv files $OPENWRT_PATH/files
         cd $OPENWRT_PATH
         mkdir -p files/etc/uci-defaults
         cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 V=s
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >>$GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >>$GITHUB_ENV
-
-    - name: Check Space Usage
-      if: (!cancelled())
-      run: df -hT
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >>$GITHUB_ENV
 
     - name: Upload Bin Directory
       if: steps.compile.conclusion == 'success' && env.UPLOAD_BIN_DIR == 'true'
@@ -243,23 +214,24 @@ jobs:
     - name: Organize Files
       if: steps.compile.conclusion == 'success'
       run: |
+        df -hT
+        echo "==============================="
+        ls $OPENWRT_PATH/bin/targets/*/*
+        echo "==============================="
         cd $OPENWRT_PATH/bin/targets/*/*
         cat config.buildinfo
+        FILE_NAME=$SOURCE_REPO-$LITE_BRANCH-$DEVICE_TARGET
         cp -rf $OPENWRT_PATH/bin/packages/* packages
-        FILE_NAME=openwrt-$DEVICE_TARGET
         tar -zcf $FILE_NAME-packages.tar.gz packages
         sleep 3s && rm -rf packages sha256sums *.buildinfo *.manifest *.bin *.json *rootfs*
-        sed '/^$/d' $OPENWRT_PATH/.config >$FILE_NAME-config.txt
+        md5sum * >$FILE_NAME-md5-config.txt
+        sed '/^$/d' $OPENWRT_PATH/.config >>$FILE_NAME-md5-config.txt
         echo "FIRMWARE_PATH=$PWD" >>$GITHUB_ENV
-        if [ $SOURCE_REPO == 'immortalwrt' ]; then
-          rename 's/openwrt/${{ env.SOURCE_REPO }}/' *
-        fi
 
     - name: Upload Firmware To Artifact
       if: steps.compile.conclusion == 'success' && env.UPLOAD_ARTIFACT == 'true'
-      uses: actions/upload-artifact@main
+      uses: haiibo/upload-artifact-as-is@master
       with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
 
     - name: Upload Firmware To Release
