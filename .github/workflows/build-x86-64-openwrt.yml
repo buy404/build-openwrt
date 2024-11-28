@@ -1,35 +1,95 @@
 name: build x86/64 openwrt
 
 on:
+#  schedule: [ cron: 30 14 */7 * * ]
+#  watch:
+#    types: started
   workflow_dispatch:
-  schedule:
-    - cron: 30 14 * * *
-  watch:
-    types: started
+    inputs:
+      source:
+        description: "选择要编译的LUCI版本"
+        required: true
+        default: "18.06"
+        type: choice
+        options: [18.06, 23.05]
 
-env:
-  CLASH_KERNEL: amd64
-  CACHE_TOOLCHAIN: true
-  UPLOAD_BIN_DIR: false
-  UPLOAD_ARTIFACT: false
-  UPLOAD_RELEASE: true
-  TZ: Asia/Shanghai
+      target:
+        description: "选择要编译的机型"
+        required: true
+        default: "x86-64"
+        type: choice
+        options: [x86-64]
+
+      ip:
+        description: "设置默认登录IP"
+        required: false
+        default: "192.168.1.2"
+
+      openclash:
+        description: "下载openclash内核"
+        required: false
+        default: "amd64"
+
+      zsh_tool:
+        description: "下载zsh终端工具"
+        required: false
+        default: true
+        type: boolean
+
+      toolchain:
+        description: "保存Toolchain缓存"
+        required: false
+        default: true
+        type: boolean
+
+      free_disk:
+        description: '清理释放磁盘空间'
+        required: false
+        default: false
+        type: boolean
+
+      bin_dir:
+        description: "上传bin目录到Artifact"
+        required: false
+        default: false
+        type: boolean
+
+      artifact:
+        description: "上传固件到Artifact"
+        required: false
+        default: true
+        type: boolean
+
+      release:
+        description: "上传固件到Releases"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id || ! github.event.sender.id
-    name: build ${{ matrix.target }} ${{ matrix.branch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86-64]
-        branch: [18.06, 23.05]
+    name: build ${{ github.event.inputs.target }} ${{ github.event.inputs.source }}
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        target: [x86-64]
+#        branch: [18.06, 23.05]
 
     env:
-      CONFIG_FILE: configs/${{ matrix.target }}.config
-      DIY_SCRIPT: diy-${{ matrix.branch }}.sh
-      RELEASE_TAG: ${{ matrix.target }}-${{ matrix.branch }}
+#      TARGET_DEVICE: ${{ github.event.inputs.target }}
+      DEFAULT_IP: ${{ github.event.inputs.ip }}
+      CLASH_KERNEL: ${{ github.event.inputs.openclash }}
+      ZSH_TOOL: ${{ github.event.inputs.zsh_tool }}
+      CACHE_TOOLCHAIN: ${{ github.event.inputs.toolchain }}
+      UPLOAD_BIN_DIR: ${{ github.event.inputs.bin_dir }}
+      UPLOAD_ARTIFACT: ${{ github.event.inputs.artifact }}
+      UPLOAD_RELEASE: ${{ github.event.inputs.release }}
+      CONFIG_FILE: configs/${{ github.event.inputs.target }}-${{ github.event.inputs.source }}.config
+      DIY_SCRIPT: diy-${{ github.event.inputs.source }}.sh
+      RELEASE_TAG: ${{ github.event.inputs.target }}-${{ github.event.inputs.source }}
+      TZ: Asia/Shanghai
 
     steps:
     - name: Checkout
@@ -37,10 +97,10 @@ jobs:
 
     - name: Set Compile Source Code
       run: |
-        if [ ${{ matrix.branch }} == '18.06' ]; then
+        if [ github.event.inputs.source == '18.06' ]; then
           echo "REPO_URL=https://github.com/coolsnowwolf/lede" >>$GITHUB_ENV
           echo "REPO_BRANCH=master" >>$GITHUB_ENV
-        elif [ ${{ matrix.branch }} == '23.05' ]; then
+        elif [ github.event.inputs.source == '23.05' ]; then
           echo "REPO_URL=https://github.com/immortalwrt/immortalwrt" >>$GITHUB_ENV
           echo "REPO_BRANCH=openwrt-23.05" >>$GITHUB_ENV
         fi
@@ -165,9 +225,7 @@ jobs:
         mkdir -p files/etc/uci-defaults
         cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        DEFAULT_IP=$(cat package/base-files/files/bin/config_generate | grep 'n) ipad' | cut -d '"' -f2)
-        echo "DEFAULT_IP=$DEFAULT_IP" >>$GITHUB_ENV
+        make -j$(nproc) || make -j1 V=s
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >>$GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >>$GITHUB_ENV
 
