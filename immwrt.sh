@@ -304,7 +304,7 @@ add_custom_packages() {
     [ -d "$destination_dir" ] || mkdir -p "$destination_dir"
 
     # 基础插件
-    clone_dir openwrt-23.05 https://github.com/coolsnowwolf/luci luci-app-adguardhome
+    git_clone https://github.com/stevenjoezhang/luci-app-adguardhome
     clone_dir https://github.com/sirpdboy/luci-app-ddns-go ddns-go luci-app-ddns-go
     clone_all https://github.com/sbwml/luci-app-alist
     clone_all https://github.com/sbwml/luci-app-mosdns
